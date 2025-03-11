@@ -39,7 +39,7 @@ type Tiles struct {
 func main() {
 	filePath := os.Args
 	filePathGeojson := os.Args
-
+	fmt.Println(filePath, filePathGeojson)
 	var geojson map[string]interface{}
 	data := ReadFile(filePath[1])
 	geoJSONString := ReadFile(filePathGeojson[2])
@@ -50,8 +50,6 @@ func main() {
 
 	var v, vn, Mesh = ReadMesh(data)
 	geoPolygon, extent := ReadGeomGeojson(geojson)
-	// // Centroid(geojson, extent)
-	fmt.Println(extent)
 	cent := []Point{}
 	index := []int{}
 
@@ -62,7 +60,7 @@ func main() {
 		var cx float64
 		var cy float64
 		for _, face := range Mesh[i] {
-			// if v[face[0].v].Z == 0 {
+			// if v[face[0].v-1].Z < 3 {
 			cx += v[face[0].v-1].X
 			cy += v[face[0].v-1].Y
 			// }
@@ -75,34 +73,11 @@ func main() {
 
 	WritePointsToCSV(cent, index, filePath[1]+".csv")
 	WriteToObj(filePath[1], index, Mesh, v, vn)
-	a := 0
-	for i := 0; i < len(tiles.childTiles); i++ {
-		for _, j := range tiles.childTiles[i].index {
-			a += j
-		}
 
-	}
-	fmt.Println(a)
 }
 
 func CreateTiles(extens Extent, size float64, geom [][]Point) Tiles {
 	var tile Tiles
-	// getCentroid := func(points []Point) Point {
-	// 	if len(points) > 0 {
-	// 		x := points[0].X
-	// 		y := points[0].Y
-
-	// 		for i := 1; i < len(points); i++ {
-	// 			x += points[i].X
-	// 			y += points[i].Y
-	// 		}
-	// 		x /= float64(len(points))
-	// 		y /= float64(len(points))
-	// 		return Point{x, y, 0}
-	// 	} else {
-	// 		return Point{0, 0, 0}
-	// 	}
-	// }
 	getExtent := func(points []Point) [4]Point {
 		var extent Extent
 		var res [4]Point
@@ -136,17 +111,11 @@ func CreateTiles(extens Extent, size float64, geom [][]Point) Tiles {
 	}
 
 	for i := 0; i < len(geom); i++ {
-		// bikin extent
-		// cek ujung ujung
-		// kalau benar masukin indeks nya
-		// misal dia sudah ada maka cek index [-1] dari array index
 		if len(geom[i]) > 0 {
 			var extent [4]Point = getExtent(geom[i])
 			var prev int = 0
 			for _, point := range extent {
 				for j := prev; j < len(tile.childTiles); j++ {
-					// }
-					// for j := range tile.childTiles {
 					child := &tile.childTiles[j]
 					if child.extent.minX <= point.X && point.X <= child.extent.maxX &&
 						child.extent.minY <= point.Y && point.Y <= child.extent.maxY {
@@ -178,9 +147,10 @@ func WriteToObj(baseFilename string, index []int, Mesh [][][]Faces, vertices []P
 	}
 
 	// Proses setiap indeks unik dan ekspor sebagai file .obj terpisah
-	os.Mkdir("export_"+baseFilename, os.ModePerm)
+	filePath := strings.Split(baseFilename, "/")
+	os.Mkdir("export/"+filePath[len(filePath)-1], os.ModePerm)
 	for idx, groups := range groupedMeshes {
-		filename := fmt.Sprintf("export_"+baseFilename+"/%d.obj", idx)
+		filename := fmt.Sprintf("export/"+filePath[len(filePath)-1]+"/%d.obj", idx)
 		file, err := os.Create(filename)
 		if err != nil {
 			fmt.Println("Error creating file:", err)
