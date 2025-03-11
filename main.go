@@ -24,6 +24,11 @@ type Extent struct {
 	minX float64
 	minY float64
 }
+type MultiPolygon struct {
+	outer  []Point
+	hole   []Point
+	island []*MultiPolygon
+}
 type Faces struct {
 	v  int
 	vt int
@@ -65,7 +70,7 @@ func main() {
 	WriteToObj(filePath[1], index, Mesh, v, vn)
 
 }
-func SearchIdInGeom(Mesh [][][]Faces, geom [][][]Point, tile Tiles, v []Point, i int, cent *[]Point) int {
+func SearchIdInGeom(Mesh [][][]Faces, geom []MultiPolygon, tile Tiles, v []Point, i int, cent *[]Point) int {
 	const defaultRes = 12030
 	res := defaultRes
 
@@ -111,7 +116,7 @@ func SearchIdInGeom(Mesh [][][]Faces, geom [][][]Point, tile Tiles, v []Point, i
 	return res
 }
 
-func CreateTiles(extens Extent, size float64, geom [][][]Point) Tiles {
+func CreateTiles(extens Extent, size float64, geom []MultiPolygon) Tiles {
 
 	var tile Tiles
 	getExtent := func(points []Point) [4]Point {
@@ -146,27 +151,40 @@ func CreateTiles(extens Extent, size float64, geom [][][]Point) Tiles {
 		}
 	}
 
-	for i := 0; i < len(geom); i++ {
-		if len(geom[i]) > 0 {
-			for j := 0; j < len(geom[i]); j++ {
-				var extent [4]Point = getExtent(geom[i][j])
-				var prev int = 0
-				for _, point := range extent {
-					for k := prev; k < len(tile.childTiles); k++ {
-						child := tile.childTiles[k]
-						if child.extent.minX <= point.X && point.X <= child.extent.maxX &&
-							child.extent.minY <= point.Y && point.Y <= child.extent.maxY {
-							if len(child.index) == 0 || child.index[len(child.index)-1] != i {
-								child.index = append(child.index, i)
-								break
-							}
-						}
+	// for i := 0; i < len(geom); i++ {
+	var processPolygon = func(index int, points []Point) {
+		if len(points) == 0 {
+			return
+		}
 
-					}
-				}
+		extent := getExtent(points)
+		minX, maxX := extent[0].X, extent[2].X
+		minY, maxY := extent[0].Y, extent[2].Y
+
+		for _, child := range tile.childTiles {
+			if child.extent.maxX < minX || child.extent.minX > maxX ||
+				child.extent.maxY < minY || child.extent.minY > maxY {
+				continue
+			}
+
+			if len(child.index) == 0 || child.index[len(child.index)-1] != index {
+				child.index = append(child.index, index)
 			}
 		}
 	}
+
+	for i, g := range geom {
+		if len(g.outer) == 0 {
+			continue
+		}
+
+		processPolygon(i, g.outer)
+
+		for _, island := range g.island {
+			processPolygon(i, island.outer)
+		}
+	}
+	// }
 	return tile
 }
 func WriteToObj(baseFilename string, index []int, Mesh [][][]Faces, vertices []Point, normals []Point) {
@@ -287,13 +305,15 @@ func WritePointsToCSV(points []Point, index []int, filename string) error {
 	return nil
 }
 
-func IsPointInPolygon(point Point, polygon [][]Point) bool {
+func IsPointInPolygon(point Point, polygon MultiPolygon) bool {
 	const eps = 1e-9
 	inside := false
-	for _, ring := range polygon {
+	var queryPolygon = func(inside *bool, polygon MultiPolygon) {
+		// for _, ring := range polygon.outer {
+		ring := polygon.outer
 		n := len(ring)
 		if n < 3 {
-			continue // Skip invalid polygon parts
+			*inside = false // Skip invalid polygon parts
 		}
 
 		j := n - 1 // Previous vertex index
@@ -303,10 +323,21 @@ func IsPointInPolygon(point Point, polygon [][]Point) bool {
 				xi, xj := ring[i].X, ring[j].X
 				xIntersect := (xj-xi)*(point.Y-yi)/(yj-yi+eps) + xi
 				if point.X < xIntersect+eps {
-					inside = !inside
+					*inside = !*inside
 				}
 			}
 			j = i
+		}
+		// }
+	}
+	queryPolygon(&inside, polygon)
+	if !inside {
+		for _, island := range polygon.island {
+			queryPolygon(&inside, *island)
+			if inside {
+				return inside
+			}
+
 		}
 	}
 
@@ -414,39 +445,70 @@ func GetExtent(X float64, Y float64, extents *Extent) {
 
 }
 
-func ReadGeomGeojson(geojson map[string]interface{}) ([][][]Point, Extent) {
-	var polygon [][][]Point
+func ReadGeomGeojson(geojson map[string]interface{}) ([]MultiPolygon, Extent) {
+	var MultiPolygons []MultiPolygon
 	var extents Extent
 	features := geojson["features"].([]interface{})
 	Cx := 700621.357389
 	Cy := 9311966.06841
 	fmt.Println(Cx, Cy)
-	for i := 0; i < len(features); i++ {
-		geom := features[i].(map[string]interface{})["geometry"].(map[string]interface{})["coordinates"].([]interface{})
-		if len(geom) > 0 {
-			var parts = make([][]Point, len(geom[0].([]interface{})))
+	for _, feature := range features {
+		geometry, ok := feature.(map[string]interface{})["geometry"].(map[string]interface{})
+		if !ok {
+			continue
+		}
 
-			for idxPart, part := range geom[0].([]interface{}) {
-				coord := part.([]interface{})
-				var LinerRing = make([]Point, len(coord))
-				for j := 0; j < len(coord); j++ {
-					X := (coord[j].([]interface{})[0].(float64) - Cx)
-					Y := (coord[j].([]interface{})[1].(float64) - Cy)
-					LinerRing[j].X = X
-					LinerRing[j].Y = Y
+		coordinates, ok := geometry["coordinates"].([]interface{})
+		if !ok || len(coordinates) == 0 {
+			MultiPolygons = append(MultiPolygons, MultiPolygon{}) // Append empty MultiPolygon
+			continue
+		}
+
+		var polygons MultiPolygon
+
+		for idxPolygon, polygon := range coordinates {
+			polygonParts, ok := polygon.([]interface{})
+			if !ok {
+				continue
+			}
+
+			for idxPart, part := range polygonParts {
+				coord, ok := part.([]interface{})
+				if !ok || len(coord) < 3 {
+					continue
+				}
+
+				LinerRing := make([]Point, len(coord))
+				for j := range coord {
+					point := coord[j].([]interface{})
+					X, Y := point[0].(float64)-Cx, point[1].(float64)-Cy
+					LinerRing[j] = Point{X, Y, 0}
+
 					GetExtent(X, Y, &extents)
 				}
-				parts[idxPart] = LinerRing
+
+				if idxPolygon == 0 {
+					if idxPart == 0 {
+						polygons.outer = LinerRing
+					} else {
+						polygons.hole = LinerRing
+					}
+				} else {
+					var island MultiPolygon
+					if idxPart == 0 {
+						island.outer = LinerRing
+					} else {
+						island.hole = LinerRing
+					}
+					polygons.island = append(polygons.island, &island)
+				}
 			}
-			polygon = append(polygon, parts)
-			// fmt.Println(points)
-		} else {
-			var points [][]Point
-			polygon = append(polygon, points)
 		}
+
+		MultiPolygons = append(MultiPolygons, polygons)
 	}
 	// fmt.Println(geomRes)
-	return polygon, extents
+	return MultiPolygons, extents
 }
 func ReadFile(filePath string) []byte {
 	file, errFile := os.Open(filePath)
