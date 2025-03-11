@@ -50,7 +50,7 @@ func main() {
 
 	var v, vn, Mesh = ReadMesh(data)
 	geoPolygon, extent := ReadGeomGeojson(geojson)
-	// cent := []Point{}
+	cent := []Point{}
 	index := []int{}
 
 	fmt.Println("Number of Object to extract: ", len(Mesh))
@@ -58,14 +58,14 @@ func main() {
 	tiles := CreateTiles(extent, 500, geoPolygon)
 	for i := 0; i < len(Mesh); i++ {
 		// cent = append(cent, Point{cx, cy, 0})
-		index = append(index, SearchIdInGeom(Mesh, geoPolygon, tiles, v, i))
+		index = append(index, SearchIdInGeom(Mesh, geoPolygon, tiles, v, i, &cent))
 	}
 
-	// WritePointsToCSV(cent, index, filePath[1]+".csv")
+	WritePointsToCSV(cent, index, filePath[1]+".csv")
 	WriteToObj(filePath[1], index, Mesh, v, vn)
 
 }
-func SearchIdInGeom(Mesh [][][]Faces, geom [][]Point, tile Tiles, v []Point, i int) int {
+func SearchIdInGeom(Mesh [][][]Faces, geom [][][]Point, tile Tiles, v []Point, i int, cent *[]Point) int {
 	const defaultRes = 12030
 	res := defaultRes
 
@@ -92,12 +92,14 @@ func SearchIdInGeom(Mesh [][][]Faces, geom [][]Point, tile Tiles, v []Point, i i
 
 			for _, index := range child.index {
 				if IsPointInPolygon(point, geom[index]) {
+					*cent = append(*cent, point)
 					return index
 				}
 			}
 			for _, index := range child.index {
 				for _, pt := range p {
 					if IsPointInPolygon(pt, geom[index]) {
+						*cent = append(*cent, point)
 						return index
 					}
 				}
@@ -105,10 +107,11 @@ func SearchIdInGeom(Mesh [][][]Faces, geom [][]Point, tile Tiles, v []Point, i i
 		}
 	}
 
+	*cent = append(*cent, point)
 	return res
 }
 
-func CreateTiles(extens Extent, size float64, geom [][]Point) Tiles {
+func CreateTiles(extens Extent, size float64, geom [][][]Point) Tiles {
 
 	var tile Tiles
 	getExtent := func(points []Point) [4]Point {
@@ -145,19 +148,21 @@ func CreateTiles(extens Extent, size float64, geom [][]Point) Tiles {
 
 	for i := 0; i < len(geom); i++ {
 		if len(geom[i]) > 0 {
-			var extent [4]Point = getExtent(geom[i])
-			var prev int = 0
-			for _, point := range extent {
-				for j := prev; j < len(tile.childTiles); j++ {
-					child := tile.childTiles[j]
-					if child.extent.minX <= point.X && point.X <= child.extent.maxX &&
-						child.extent.minY <= point.Y && point.Y <= child.extent.maxY {
-						if len(child.index) == 0 || child.index[len(child.index)-1] != i {
-							child.index = append(child.index, i)
-							break
+			for j := 0; j < len(geom[i]); j++ {
+				var extent [4]Point = getExtent(geom[i][j])
+				var prev int = 0
+				for _, point := range extent {
+					for k := prev; k < len(tile.childTiles); k++ {
+						child := tile.childTiles[k]
+						if child.extent.minX <= point.X && point.X <= child.extent.maxX &&
+							child.extent.minY <= point.Y && point.Y <= child.extent.maxY {
+							if len(child.index) == 0 || child.index[len(child.index)-1] != i {
+								child.index = append(child.index, i)
+								break
+							}
 						}
-					}
 
+					}
 				}
 			}
 		}
@@ -282,28 +287,32 @@ func WritePointsToCSV(points []Point, index []int, filename string) error {
 	return nil
 }
 
-func IsPointInPolygon(point Point, polygon []Point) bool {
-	n := len(polygon)
-	if n < 3 {
-		return false // A polygon must have at least 3 vertices
-	}
-
+func IsPointInPolygon(point Point, polygon [][]Point) bool {
+	const eps = 1e-9
 	inside := false
-	j := n - 1 // Previous vertex index
-	for i := 0; i < n; i++ {
-		// Check if point is within y-bounds of edge
-		if (polygon[i].Y > point.Y) != (polygon[j].Y > point.Y) {
-			// Compute intersection of edge with horizontal ray from point
-			xIntersect := (polygon[j].X-polygon[i].X)*(point.Y-polygon[i].Y)/(polygon[j].Y-polygon[i].Y) + polygon[i].X
-			if point.X < xIntersect {
-				inside = !inside
-			}
+	for _, ring := range polygon {
+		n := len(ring)
+		if n < 3 {
+			continue // Skip invalid polygon parts
 		}
-		j = i // Move to next edge
+
+		j := n - 1 // Previous vertex index
+		for i := 0; i < n; i++ {
+			yi, yj := ring[i].Y, ring[j].Y
+			if (yi > point.Y+eps) != (yj > point.Y+eps) { // Check y-bounds
+				xi, xj := ring[i].X, ring[j].X
+				xIntersect := (xj-xi)*(point.Y-yi)/(yj-yi+eps) + xi
+				if point.X < xIntersect+eps {
+					inside = !inside
+				}
+			}
+			j = i
+		}
 	}
 
 	return inside
 }
+
 func ReadMesh(data []byte) ([]Point, []Point, [][][]Faces) {
 	var v = []Point{}
 	var vn = []Point{}
@@ -405,8 +414,8 @@ func GetExtent(X float64, Y float64, extents *Extent) {
 
 }
 
-func ReadGeomGeojson(geojson map[string]interface{}) ([][]Point, Extent) {
-	var polygon [][]Point
+func ReadGeomGeojson(geojson map[string]interface{}) ([][][]Point, Extent) {
+	var polygon [][][]Point
 	var extents Extent
 	features := geojson["features"].([]interface{})
 	Cx := 700621.357389
@@ -415,21 +424,24 @@ func ReadGeomGeojson(geojson map[string]interface{}) ([][]Point, Extent) {
 	for i := 0; i < len(features); i++ {
 		geom := features[i].(map[string]interface{})["geometry"].(map[string]interface{})["coordinates"].([]interface{})
 		if len(geom) > 0 {
+			var parts = make([][]Point, len(geom[0].([]interface{})))
 
-			coord := geom[0].([]interface{})[0].([]interface{})
-			var LinerRing = make([]Point, len(coord))
-			for j := 0; j < len(coord); j++ {
-				X := (coord[j].([]interface{})[0].(float64) - Cx)
-				Y := (coord[j].([]interface{})[1].(float64) - Cy)
-				LinerRing[j].X = X
-				LinerRing[j].Y = Y
-				GetExtent(X, Y, &extents)
-
+			for idxPart, part := range geom[0].([]interface{}) {
+				coord := part.([]interface{})
+				var LinerRing = make([]Point, len(coord))
+				for j := 0; j < len(coord); j++ {
+					X := (coord[j].([]interface{})[0].(float64) - Cx)
+					Y := (coord[j].([]interface{})[1].(float64) - Cy)
+					LinerRing[j].X = X
+					LinerRing[j].Y = Y
+					GetExtent(X, Y, &extents)
+				}
+				parts[idxPart] = LinerRing
 			}
-			polygon = append(polygon, LinerRing)
+			polygon = append(polygon, parts)
 			// fmt.Println(points)
 		} else {
-			var points []Point
+			var points [][]Point
 			polygon = append(polygon, points)
 		}
 	}
