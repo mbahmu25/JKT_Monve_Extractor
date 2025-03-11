@@ -32,7 +32,7 @@ type Faces struct {
 
 type Tiles struct {
 	extent     Extent
-	childTiles []Tiles
+	childTiles []*Tiles
 	index      []int
 }
 
@@ -50,33 +50,66 @@ func main() {
 
 	var v, vn, Mesh = ReadMesh(data)
 	geoPolygon, extent := ReadGeomGeojson(geojson)
-	cent := []Point{}
+	// cent := []Point{}
 	index := []int{}
 
 	fmt.Println("Number of Object to extract: ", len(Mesh))
 	// Proses Tiling agar mengurangi search pada geojson
-	tiles := CreateTiles(extent, 200, geoPolygon)
+	tiles := CreateTiles(extent, 500, geoPolygon)
 	for i := 0; i < len(Mesh); i++ {
-		var cx float64
-		var cy float64
-		for _, face := range Mesh[i] {
-			// if v[face[0].v-1].Z < 3 {
-			cx += v[face[0].v-1].X
-			cy += v[face[0].v-1].Y
-			// }
-		}
-		cx /= float64(len(Mesh[i]))
-		cy /= float64(len(Mesh[i]))
-		cent = append(cent, Point{cx, cy, 0})
-		index = append(index, SearchIdInGeom(Point{cx, cy, 0}, geoPolygon, tiles))
+		// cent = append(cent, Point{cx, cy, 0})
+		index = append(index, SearchIdInGeom(Mesh, geoPolygon, tiles, v, i))
 	}
 
-	WritePointsToCSV(cent, index, filePath[1]+".csv")
+	// WritePointsToCSV(cent, index, filePath[1]+".csv")
 	WriteToObj(filePath[1], index, Mesh, v, vn)
 
 }
+func SearchIdInGeom(Mesh [][][]Faces, geom [][]Point, tile Tiles, v []Point, i int) int {
+	const defaultRes = 12030
+	res := defaultRes
+
+	// Compute centroid in a single loop
+	var p []Point
+	var cx, cy float64
+	faceCount := len(Mesh[i])
+
+	for _, face := range Mesh[i] {
+		vx := v[face[0].v-1]
+		cx += vx.X
+		cy += vx.Y
+		p = append(p, Point{vx.X, vx.Y, 0})
+	}
+
+	cx /= float64(faceCount)
+	cy /= float64(faceCount)
+	point := Point{cx, cy, 0}
+
+	// Search in child tiles
+	for _, child := range tile.childTiles {
+		if child.extent.minX <= point.X && point.X <= child.extent.maxX &&
+			child.extent.minY <= point.Y && point.Y <= child.extent.maxY {
+
+			for _, index := range child.index {
+				if IsPointInPolygon(point, geom[index]) {
+					return index
+				}
+			}
+			for _, index := range child.index {
+				for _, pt := range p {
+					if IsPointInPolygon(pt, geom[index]) {
+						return index
+					}
+				}
+			}
+		}
+	}
+
+	return res
+}
 
 func CreateTiles(extens Extent, size float64, geom [][]Point) Tiles {
+
 	var tile Tiles
 	getExtent := func(points []Point) [4]Point {
 		var extent Extent
@@ -106,7 +139,7 @@ func CreateTiles(extens Extent, size float64, geom [][]Point) Tiles {
 			}
 
 			tileExtent := Extent{maxx, maxy, minx, miny}
-			tile.childTiles = append(tile.childTiles, Tiles{tileExtent, nil, []int{}})
+			tile.childTiles = append(tile.childTiles, &Tiles{tileExtent, nil, []int{}})
 		}
 	}
 
@@ -116,18 +149,15 @@ func CreateTiles(extens Extent, size float64, geom [][]Point) Tiles {
 			var prev int = 0
 			for _, point := range extent {
 				for j := prev; j < len(tile.childTiles); j++ {
-					child := &tile.childTiles[j]
+					child := tile.childTiles[j]
 					if child.extent.minX <= point.X && point.X <= child.extent.maxX &&
 						child.extent.minY <= point.Y && point.Y <= child.extent.maxY {
-						if len(child.index) == 0 {
-							child.index = append(child.index, i)
-							break
-						} else if child.index[len(child.index)-1] != i {
+						if len(child.index) == 0 || child.index[len(child.index)-1] != i {
 							child.index = append(child.index, i)
 							break
 						}
-
 					}
+
 				}
 			}
 		}
@@ -250,27 +280,6 @@ func WritePointsToCSV(points []Point, index []int, filename string) error {
 	fmt.Println("CSV file saved:", filename)
 
 	return nil
-}
-
-func SearchIdInGeom(point Point, geom [][]Point, tile Tiles) int {
-	var res int = 12030
-	for _, child := range tile.childTiles {
-		if child.extent.minX <= point.X && point.X <= child.extent.maxX &&
-			child.extent.minY <= point.Y && point.Y <= child.extent.maxY {
-
-			for _, index := range child.index {
-
-				if IsPointInPolygon(point, geom[index]) {
-
-					res = index
-					break
-				}
-			}
-			break
-		}
-
-	}
-	return res
 }
 
 func IsPointInPolygon(point Point, polygon []Point) bool {
