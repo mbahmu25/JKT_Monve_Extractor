@@ -158,19 +158,20 @@ func CreateTiles(extens Extent, size float64, geom []MultiPolygon) Tiles {
 		}
 
 		extent := getExtent(points)
-		minX, maxX := extent[0].X, extent[2].X
-		minY, maxY := extent[0].Y, extent[2].Y
+		for _, extentPoint := range extent {
 
-		for _, child := range tile.childTiles {
-			if child.extent.maxX < minX || child.extent.minX > maxX ||
-				child.extent.maxY < minY || child.extent.minY > maxY {
-				continue
-			}
+			for _, child := range tile.childTiles {
+				if child.extent.maxX < extentPoint.X || child.extent.minX > extentPoint.X ||
+					child.extent.maxY < extentPoint.Y || child.extent.minY > extentPoint.Y {
+					continue
+				}
 
-			if len(child.index) == 0 || child.index[len(child.index)-1] != index {
-				child.index = append(child.index, index)
+				if len(child.index) == 0 || child.index[len(child.index)-1] != index {
+					child.index = append(child.index, index)
+				}
 			}
 		}
+
 	}
 
 	for i, g := range geom {
