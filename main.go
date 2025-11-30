@@ -41,13 +41,18 @@ type Tiles struct {
 	index      []int
 }
 
+var (
+	Cx float64
+	Cy float64
+)
+
 func main() {
 	filePath := os.Args
 	filePathGeojson := os.Args
 	fmt.Println(filePath, filePathGeojson)
 	var geojson map[string]interface{}
 	data := ReadFile(filePath[1])
-	geoJSONString := ReadFile(filePathGeojson[2])
+	geoJSONString := ReadFile(filePath[2])
 	err := json.Unmarshal(geoJSONString, &geojson)
 	if err != nil {
 		fmt.Println(err)
@@ -62,7 +67,6 @@ func main() {
 	// Proses Tiling agar mengurangi search pada geojson
 	tiles := CreateTiles(extent, 500, geoPolygon)
 	for i := 0; i < len(Mesh); i++ {
-		// cent = append(cent, Point{cx, cy, 0})
 		index = append(index, SearchIdInGeom(Mesh, geoPolygon, tiles, v, i, &cent))
 	}
 
@@ -89,6 +93,30 @@ func SearchIdInGeom(Mesh [][][]Faces, geom []MultiPolygon, tile Tiles, v []Point
 	cx /= float64(faceCount)
 	cy /= float64(faceCount)
 	point := Point{cx, cy, 0}
+	ring := p
+
+	n := len(ring)
+	inside := false
+	if n < 3 {
+		inside = false // Skip invalid polygon parts
+	}
+
+	j := n - 1 // Previous vertex index
+	for i := 0; i < n; i++ {
+		yi, yj := ring[i].Y, ring[j].Y
+		if (yi > point.Y) != (yj > point.Y) { // Check y-bounds
+			xi, xj := ring[i].X, ring[j].X
+			xIntersect := (xj-xi)*(point.Y-yi)/(yj-yi) + xi
+			if point.X < xIntersect {
+				inside = !inside
+			}
+		}
+		j = i
+	}
+	if inside == false {
+		point = p[0]
+	}
+	// }
 
 	// Search in child tiles
 	for _, child := range tile.childTiles {
